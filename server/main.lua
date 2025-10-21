@@ -3,7 +3,7 @@ local MySQL = exports.oxmysql
 
 -- Create table if it doesn't exist
 Citizen.CreateThread(function()
-    MySQL.query([[
+    exports.oxmysql:executeSync([[
         CREATE TABLE IF NOT EXISTS `skills_data` (
             `citizenid` VARCHAR(50) NOT NULL,
             `skill` VARCHAR(50) NOT NULL,
@@ -11,9 +11,8 @@ Citizen.CreateThread(function()
             `level` INT DEFAULT 1,
             PRIMARY KEY (`citizenid`, `skill`)
         )
-    ]], {}, function(result)
-        print('Skills table checked/created')
-    end)
+    ]], {})
+    print('Skills table checked/created')
 end)
 
 -- Export to get skill data (use metadata if available)
@@ -26,19 +25,19 @@ exports('GetSkillData', function(source, skill)
     local level = Player.PlayerData.metadata[skill .. '_level'] or 1
     if xp == 0 and level == 1 then
         local citizenid = Player.PlayerData.citizenid
-        local result = MySQL.query.await('SELECT xp, level FROM skills_data WHERE citizenid = @citizenid AND skill = @skill', {
-            ['@citizenid'] = citizenid,
-            ['@skill'] = skill
+        local result = exports.oxmysql:fetchSync('SELECT xp, level FROM skills_data WHERE citizenid = :citizenid AND skill = :skill', {
+            citizenid = citizenid,
+            skill = skill
         })
         if result[1] then
             xp = result[1].xp
             level = result[1].level
         else
-            MySQL.insert.await('INSERT INTO skills_data (citizenid, skill, xp, level) VALUES (@citizenid, @skill, @xp, @level)', {
-                ['@citizenid'] = citizenid,
-                ['@skill'] = skill,
-                ['@xp'] = 0,
-                ['@level'] = 1
+            exports.oxmysql:executeSync('INSERT INTO skills_data (citizenid, skill, xp, level) VALUES (:citizenid, :skill, :xp, :level) ON DUPLICATE KEY UPDATE xp = VALUES(xp), level = VALUES(level)', {
+                citizenid = citizenid,
+                skill = skill,
+                xp = 0,
+                level = 1
             })
         end
         Player.Functions.SetMetaData(skill .. '_xp', xp)
@@ -76,13 +75,16 @@ exports('AddSkillXP', function(source, skill, amount)
 end)
 
 -- Load skills on player join and start periodic save
-RSGCore.Functions.RegisterServerCallback('cb-skills:loadSkills', function(source, cb)
-    local Player = RSGCore.Functions.GetPlayer(source)
+RegisterNetEvent('cb-skills:loadSkills')
+AddEventHandler('cb-skills:loadSkills', function()
+    local src = source
+    local Player = RSGCore.Functions.GetPlayer(src)
+    if not Player then return end
     local citizenid = Player.PlayerData.citizenid
     local skills = {}
     
-    local result = MySQL.query.await('SELECT skill, xp, level FROM skills_data WHERE citizenid = @citizenid', {
-        ['@citizenid'] = citizenid
+    local result = exports.oxmysql:fetchSync('SELECT skill, xp, level FROM skills_data WHERE citizenid = :citizenid', {
+        citizenid = citizenid
     })
     
     for skill, _ in pairs(Config.Skills) do
@@ -96,28 +98,28 @@ RSGCore.Functions.RegisterServerCallback('cb-skills:loadSkills', function(source
         Player.Functions.SetMetaData(skill .. '_xp', skills[skill].xp)
         Player.Functions.SetMetaData(skill .. '_level', skills[skill].level)
         if skills[skill].xp == 0 and skills[skill].level == 1 then
-            MySQL.insert.await('INSERT INTO skills_data (citizenid, skill, xp, level) VALUES (@citizenid, @skill, @xp, @level)', {
-                ['@citizenid'] = citizenid,
-                ['@skill'] = skill,
-                ['@xp'] = 0,
-                ['@level'] = 1
+            exports.oxmysql:executeSync('INSERT INTO skills_data (citizenid, skill, xp, level) VALUES (:citizenid, :skill, :xp, :level) ON DUPLICATE KEY UPDATE xp = VALUES(xp), level = VALUES(level)', {
+                citizenid = citizenid,
+                skill = skill,
+                xp = 0,
+                level = 1
             })
         end
     end
+    
+    TriggerClientEvent('cb-skills:setSkills', src, skills)
     
     -- Start periodic save for this player
     Citizen.CreateThread(function()
         while true do
             Citizen.Wait(Config.SaveInterval)
             if Player then
-                SavePlayerSkills(source)
+                SavePlayerSkills(src)
             else
                 break
             end
         end
     end)
-    
-    cb(skills)
 end)
 
 -- Function to save skills to DB
@@ -128,11 +130,11 @@ local function SavePlayerSkills(source)
         for skill, _ in pairs(Config.Skills) do
             local xp = Player.PlayerData.metadata[skill .. '_xp'] or 0
             local level = Player.PlayerData.metadata[skill .. '_level'] or 1
-            MySQL.update.await('UPDATE skills_data SET xp = @xp, level = @level WHERE citizenid = @citizenid AND skill = @skill', {
-                ['@xp'] = xp,
-                ['@level'] = level,
-                ['@citizenid'] = citizenid,
-                ['@skill'] = skill
+            exports.oxmysql:executeSync('INSERT INTO skills_data (citizenid, skill, xp, level) VALUES (:citizenid, :skill, :xp, :level) ON DUPLICATE KEY UPDATE xp = :xp, level = :level', {
+                citizenid = citizenid,
+                skill = skill,
+                xp = xp,
+                level = level
             })
         end
     end
@@ -142,4 +144,9 @@ end
 AddEventHandler('playerDropped', function()
     local src = source
     SavePlayerSkills(src)
+end)
+
+-- Trigger skill loading on player spawn
+AddEventHandler('RSGCore:Server:PlayerLoaded', function(player)
+    TriggerClientEvent('cb-skills:loadSkills', player.PlayerData.source)
 end)

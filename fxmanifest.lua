@@ -14,6 +14,10 @@ server_scripts {
     'server/version.lua'
 }
 
+client_scripts {
+    'client/main.lua'
+}
+
 dependencies {
     'rsg-core'
 }
